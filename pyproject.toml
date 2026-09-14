@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cursorpool"
+version = "0.1.0"
+description = "Pool and load-balance Cursor CLI credentials across accounts"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "cursorpool" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+cursorpool = "cursorpool.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/zeval/cursorpool"
+Repository = "https://github.com/zeval/cursorpool"
+Issues = "https://github.com/zeval/cursorpool/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
