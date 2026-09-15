@@ -39,7 +39,17 @@ def validate_session(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("session missing a non-empty apiKey string")
     if any(ord(char) < 32 or ord(char) == 127 for char in token):
         raise ValueError("session.apiKey must not contain control characters")
-    return {"apiKey": token.strip()}
+    session = {"apiKey": token.strip()}
+    if "usageSessionToken" in data:
+        usage_token = data["usageSessionToken"]
+        if (
+            not isinstance(usage_token, str)
+            or not usage_token
+            or any(ord(char) <= 32 or ord(char) >= 127 or char in ';,"\\' for char in usage_token)
+        ):
+            raise ValueError("usageSessionToken must be a non-empty cookie value without whitespace or separators")
+        session["usageSessionToken"] = usage_token
+    return session
 
 
 def load_session(path: str | Path) -> dict[str, Any]:
@@ -141,7 +151,7 @@ def build_share_envelope(
         "v": BLOB_VERSION,
         "email": email,
         "label": (label or email).strip(),
-        "session": validate_session(session),
+        "session": {"apiKey": validate_session(session)["apiKey"]},
     }
 
 

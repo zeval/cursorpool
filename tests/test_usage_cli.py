@@ -67,5 +67,5 @@ def test_usage_help_explains_report_options(capsys):
     assert raised.value.code == 0
     output = capsys.readouterr().out
     assert "emit structured JSON" in output
-    assert "check credit usage availability before rendering" in output
+    assert "fetch Cursor dashboard usage before rendering" in output
     assert "disable ANSI color" in output

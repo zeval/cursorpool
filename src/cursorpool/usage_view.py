@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from cursorpool.analytics import public_usage_details
 from cursorpool.pool import Pool
 from cursorpool.select import rank_accounts
 from cursorpool.state import State
@@ -199,6 +200,9 @@ def usage_report_payload(
         age_seconds = max(0, int(now - float(fetched_at)))
 
     return {
+        "usage_unit": (cache or {}).get("unit"),
+        "usage_complete": usage is not None and all(a.email in usage for a in pool.enabled_accounts()),
+        "account_usage": public_usage_details(cache, usage or {}),
         "window": {
             "start_date": (cache or {}).get("start_date"),
             "end_date": (cache or {}).get("end_date"),
@@ -279,12 +283,16 @@ def render_usage_dashboard(
             _paint(_clip("current-month account balance", width), _DIM, color)
         )
 
+    usd = report["usage_unit"] == "USD"
     credit_total = totals["credits_consumed"]
     credits_summary = (
         f"{format_compact(credit_total)} credits"
         if credit_total is not None
         else "credits unavailable"
     )
+    if usd and credit_total is not None:
+        qualifier = "used" if report["usage_complete"] else "known usage (partial)"
+        credits_summary = f"${credit_total:,.2f} USD {qualifier}"
     summary = " · ".join(
         (
             _plural(totals["accounts"], "account"),
@@ -343,7 +351,8 @@ def render_usage_dashboard(
 
         if row["credits_consumed"] is not None:
             share = float(row["credit_share"] or 0)
-            right = f"{format_compact(row['credits_consumed'])}  {share * 100:.1f}%  {status}"
+            amount = f"${row['credits_consumed']:,.2f}" if usd else format_compact(row["credits_consumed"])
+            right = f"{amount}  {share * 100:.1f}%  {status}"
         elif usage is None:
             share = int(row["local_sessions"]) / total_sessions
             right = f"{share * 100:.1f}%  {status}"
@@ -353,7 +362,8 @@ def render_usage_dashboard(
 
         if width < 32:
             if row["credits_consumed"] is not None:
-                right = f"{format_compact(row['credits_consumed'])} {status}"
+                amount = f"${row['credits_consumed']:.2f}" if usd else format_compact(row["credits_consumed"])
+                right = f"{amount} {status}"
             elif usage is None:
                 right = f"{row['local_sessions']}s {status}"
             else:
@@ -404,7 +414,11 @@ def render_usage_dashboard(
     else:
         lines.append(
             _paint(
-                _clip("Credits from Analytics · lower usage ranks first", width),
+                _clip(
+                    ("USD from Cursor dashboard · lower spend ranks first" if report["usage_complete"]
+                     else "Partial USD usage · ranking uses local session counts")
+                    if usd else "Credits from Analytics · lower usage ranks first", width,
+                ),
                 _DIM,
                 color,
             )

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from cursorpool import __version__, paths
-from cursorpool.analytics import get_fresh_usage, load_usage_cache, refresh_usage
+from cursorpool.analytics import get_fresh_usage, get_usage_result, load_usage_cache, refresh_usage
 from cursorpool.pool import (
     add_account,
     find_account,
@@ -36,6 +36,7 @@ from cursorpool.session_io import (
     normalize_email,
     read_share_blob_arg,
     restore_backup,
+    write_session,
 )
 from cursorpool.state import locked_state, record_selection
 from cursorpool.usage_view import render_usage_dashboard, usage_report_payload
@@ -87,15 +88,41 @@ def cmd_import(args: argparse.Namespace) -> int:
     pool = load_pool(root)
 
     session_flag = getattr(args, "session", None)
-    modes = sum(bool(x) for x in (args.self, session_flag, args.blob))
+    usage_session = getattr(args, "usage_session", None)
+    modes = sum(bool(x) for x in (args.self, session_flag, args.blob, usage_session))
     if modes > 1:
         raise ValueError(
-            "pass only one of: blob, --self, or --session\n"
+            "pass only one of: blob, --self, --session, or --usage-session\n"
             "  examples:\n"
             "    cursorpool import eyJ...\n"
             "    cursorpool import --self --email you@company.com\n"
             "    cursorpool import --session ./session.json --email you@company.com"
         )
+
+    if usage_session is not None:
+        if not args.email:
+            raise ValueError("import --usage-session requires --email for an existing account")
+        account = find_account(pool, normalize_email(args.email))
+        session_path = resolve_session_file(account, root)
+        session = load_session(session_path)
+        if usage_session == "prompt":
+            import getpass
+            import warnings
+
+            # Refuse getpass's echoing fallback when no terminal is available.
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                try:
+                    value = getpass.getpass("Cursor WorkosCursorSessionToken (hidden): ")
+                except (getpass.GetPassWarning, EOFError) as exc:
+                    raise ValueError("no secure terminal; use --usage-session - with stdin") from exc
+        elif usage_session == "-":
+            value = sys.stdin.read()
+        else:
+            value = paths.expand(usage_session).read_text(encoding="utf-8")
+        write_session(session_path, {**session, "usageSessionToken": value.strip()})
+        _print_mutation(args, "import", account.email, f"imported usage session for {account.email}")
+        return 0
 
     if args.self or session_flag:
         if not args.email:
@@ -125,7 +152,6 @@ def cmd_import(args: argparse.Namespace) -> int:
         else:
             if str(session_flag) == "-":
                 import json as _json
-                import sys
 
                 try:
                     payload = _json.load(sys.stdin)
@@ -291,14 +317,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("  cursorpool import --self --email you@company.com")
         print("  cursorpool import <blob>")
         return 0
-    headers = ("EMAIL", "SCORE", "CREDITS", "LOCAL", "SRC", "COOL", "LOCKED")
+    headers = ("EMAIL", "SCORE", "USED USD" if usage is not None else "CREDITS", "LOCAL", "SRC", "COOL", "LOCKED")
     rows = []
     for r in ranked:
         rows.append(
             (
                 r.account.email[:40],
                 f"{r.score:.1f}",
-                f"{r.credits_consumed:.0f}" if r.source == "analytics" else "-",
+                f"{r.credits_consumed:.2f}" if r.source == "analytics" else "-",
                 str(r.local_uses),
                 r.source[:5],
                 "yes" if r.in_cooldown else "-",
@@ -353,8 +379,9 @@ def cmd_usage(args: argparse.Namespace) -> int:
     root = _root_from_args(args)
     pool = load_pool(root)
     with locked_state(root) as state:
-        usage = _usage_map(pool, root, force=args.refresh, refresh_if_stale=True)
-        cache = load_usage_cache(root)
+        result = get_usage_result(pool, root=root, force=args.refresh)
+        usage = result.by_id
+        cache = result.cache or {"errors": result.errors}
         if args.json:
             print(
                 json.dumps(
@@ -539,6 +566,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="required with --self or --session",
     )
+    imp_p.add_argument(
+        "--usage-session", nargs="?", const="prompt", default=None,
+        metavar="FILE",
+        help="attach dashboard session to an existing --email; hidden prompt, FILE, or - for stdin",
+    )
     imp_p.add_argument("--label", default="")
     imp_p.add_argument("--force", action="store_true", help="replace existing email")
     imp_p.add_argument("--json", action="store_true")
@@ -572,7 +604,7 @@ def build_parser() -> argparse.ArgumentParser:
     stats_p.add_argument("--json", action="store_true")
     stats_p.add_argument("--refresh", action="store_true")
     stats_p.set_defaults(func=cmd_stats)
-    rf_p = sub.add_parser("refresh", help="check credit usage availability (local-only for now)")
+    rf_p = sub.add_parser("refresh", help="fetch personal Cursor dashboard usage")
     rf_p.set_defaults(func=cmd_refresh)
     usage_p = sub.add_parser(
         "usage",
@@ -586,7 +618,7 @@ def build_parser() -> argparse.ArgumentParser:
     usage_p.add_argument(
         "--refresh",
         action="store_true",
-        help="check credit usage availability before rendering",
+        help="fetch Cursor dashboard usage before rendering",
     )
     usage_p.add_argument(
         "--no-color",

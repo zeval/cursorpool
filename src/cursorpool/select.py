@@ -46,6 +46,9 @@ def rank_accounts(
     """Return enabled accounts sorted best-first (lowest score)."""
     now = time.time() if now is None else now
     clear_expired_cooldowns(state, now=now)
+    # A dollar amount and a local selection count are not comparable scores.
+    if usage is not None and any(a.email not in usage for a in pool.enabled_accounts()):
+        usage = None
     ranked: list[RankedAccount] = []
     for account in pool.enabled_accounts():
         st = state.for_account(account.email)

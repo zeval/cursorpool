@@ -9,9 +9,10 @@ account, or lock new sessions to one account. Identity is the **full email**.
 This is a private adaptation of [augpool](https://github.com/zeval/augpool).
 The command names, routing controls, share-envelope shape, dashboard layout,
 and stats schema are retained. Cursor authentication uses **user API keys**.
-Browser-login import and remote credit retrieval are **not supported** in this
-version. Local session counts drive selection; they do not measure token usage,
-spend, or remaining quota.
+Personal usage is available through an optional **Cursor dashboard session**.
+Without it, local session counts drive selection; they do not measure token
+usage, spend, or remaining quota. Browser-login import for CLI execution remains
+unsupported.
 
 | | |
 |---|---|
@@ -80,8 +81,53 @@ cursorpool add --email you@example.com --session ./session.json
 ```
 
 API keys must be non-empty strings without control characters. The stored
-session contains only `apiKey`; Augment sessions are not accepted. Each imported
+session contains `apiKey` and optionally `usageSessionToken`; Augment sessions
+are not accepted. Each imported
 credential file is written atomically with `0600` permissions.
+
+## Enable personal usage
+
+For an existing installation from the feature branch, first run:
+
+```bash
+pipx reinstall cursorpool
+```
+
+1. Sign into [Cursor dashboard](https://cursor.com/dashboard) as the account you
+   imported into cursorpool.
+2. Open browser developer tools: **Application → Cookies → cursor.com** in
+   Chromium, or **Storage → Cookies** in Firefox. Copy only the **value** of
+   `WorkosCursorSessionToken`.
+3. Run the following command and paste the value into its hidden terminal prompt:
+
+   ```bash
+   cursorpool import --usage-session --email you@example.com
+   ```
+
+4. Fetch and display usage:
+
+   ```bash
+   cursorpool refresh
+   cursorpool list
+   cursorpool usage --no-color
+   ```
+
+The dashboard session is separate from the API key used to run Cursor. Importing
+it preserves the existing key and account settings. For automation,
+`--usage-session FILE` reads a raw cookie value from a file and
+`--usage-session -` reads stdin. Never put the value in command arguments or chat.
+Re-import it when Cursor rejects or expires the session.
+
+The session is password-equivalent: stored atomically with `0600` permissions,
+never included in share exports or child environments. No browser database or
+IDE credential store is read automatically. Normal API-key/session replacement
+imports can remove the optional dashboard session; attach it again afterward.
+
+This uses the same dashboard endpoints identified in
+[CodexBar's Cursor provider](https://github.com/steipete/CodexBar/blob/main/Sources/CodexBarCore/Providers/Cursor/CursorStatusProbe.swift):
+`/api/auth/me` checks the email before `/api/usage-summary` is fetched. These are
+internal dashboard endpoints, not a documented personal API-key contract; they
+may change. Automated tests use fake responses, not live subscriptions.
 
 ## Export and share
 
@@ -120,8 +166,10 @@ cursorpool mode you@example.com         # lock new sessions to this account
 ```
 
 Selection order is explicit `--email` → persisted lock → automatic selection.
-Auto ranks by local selections divided by weight, then oldest selection and
-email. Disabled accounts and accounts in cooldown cannot be selected. A locked
+Auto ranks by current-cycle USD used divided by weight when usage is available
+for every enabled account; otherwise all accounts use local selections divided
+by weight. Ties use oldest selection and email. Dollar totals are not normalized
+by plan allowance and do not guarantee remaining quota. Disabled accounts and accounts in cooldown cannot be selected. A locked
 account cannot be disabled or removed until you switch mode.
 
 Auto-mode print runs can fail over after a nonzero exit with rate-limit output.
@@ -166,23 +214,34 @@ cursorpool refresh
 ```
 
 The dashboard keeps augpool's layout, per-account bars, and 30-day session
-history. It labels credits **unavailable** and uses local session bars. Daily
-counts are UTC, retained for 90 days. As in augpool, failed attempts that trigger another failover are cooled down
-but not counted as completed selections. Counts track cursorpool selections only;
-activity outside cursorpool is not recorded.
+history. With dashboard sessions configured, it shows **USD used** during each
+account's billing cycle: included-plan usage plus on-demand usage, converted from
+Cursor's cents. The list column becomes `USED USD`. JSON adds plan usage, on-demand
+usage, available allowance/remaining values, billing dates, and fetch time. Older
+request-only or otherwise unsupported responses remain unavailable rather than
+being displayed as zero.
 
-`refresh` and `--refresh` retain their interface but report unavailable remote
-usage without making a network request. The
-[Cursor Admin API](https://cursor.com/docs/account/teams/admin-api) exposes team
-usage using separate authentication; this version does not integrate it.
-Copied Augment credit caches cannot influence Cursor account ranking.
+`refresh` and `--refresh` fetch current usage. Ordinary reads use the configured
+cache TTL (300 seconds by default). Temporary network failures, HTTP 429, or
+server errors can use cached data for up to 24 hours within the same billing
+cycle, with an error explaining the fallback. Authentication failures, identity
+mismatches, and changed dashboard sessions invalidate prior data. Copied Augment
+caches cannot influence ranking.
+
+Partial results show known USD usage, but automatic selection uses local counts
+for the whole pool whenever any enabled account lacks usage. Without dashboard
+sessions, no usage request is made and the dashboard shows local session bars.
+Local counts are UTC, retained for 90 days, and track cursorpool selections only.
+Failed attempts that trigger failover are cooled down but not counted as completed
+selections; activity outside cursorpool is absent from local history.
 
 `stats --json` retains **schema_version 2**, mode, nullable `locked_email`, usage
-metadata, and ranked account rows. `usage.refresh_succeeded` is false and
-`usage.errors` explains the limitation. For compatibility, `stats` and `list`
-keep the inherited `credits_consumed` fallback field: read `source` alongside
-it (`local` means a selection count; `unknown` means no recorded usage).
-`usage --json` reports unavailable credits as `null`.
+metadata, and ranked account rows. For compatibility, `stats` and `list` retain
+`credits_consumed`: read `source` alongside it (`analytics` means USD used,
+`local` means selection count, `unknown` means no recorded usage). Stats adds
+`usage.unit` and `usage.account_usage` for dashboard data; `usage --json` adds
+`usage_unit`, `usage_complete`, and `account_usage`. Errors and refresh provenance
+remain available in JSON. This does not integrate the separate Teams Admin API.
 
 Reports exclude credentials, session paths, tenant URLs, and notes. `export`
 remains the explicit exception: its stdout is credential data.
@@ -202,6 +261,7 @@ cursorpool remove you@example.com --json
 |---|---|
 | `import --self --email …` | Import environment key or cursorpool session file |
 | `import --session PATH --email …` | Import JSON (`-` = stdin) |
+| `import --usage-session [FILE] --email …` | Attach dashboard cookie (hidden prompt by default; `-` = stdin) |
 | `import <blob>` | Import share blob (`-` = stdin; `--json`) |
 | `add --email … --session …` | Add from session JSON (`--force` to replace) |
 | `export [email] \| --self` | Export blob (`--env`, `--json`) |
@@ -211,7 +271,7 @@ cursorpool remove you@example.com --json
 | `list` | Ranked accounts (`--json`, `--refresh`) |
 | `usage` | Session dashboard (`--json`, `--refresh`, `--no-color`) |
 | `stats --json` | Versioned safe snapshot (`--refresh`) |
-| `refresh` | Report remote usage availability |
+| `refresh` | Fetch personal dashboard usage |
 | `run -- <cmd…>` | Execute with pooled authentication |
 | `status` | Home, mode and ranks (`--json`, `--refresh`) |
 | `restore` | Restore an existing cursorpool session backup |
@@ -227,8 +287,8 @@ session files or create backups, and restoring never changes the selection mode.
   pool.json           # registry, lock, weights; schema v3
   state.json          # local selections, daily history, cooldowns
   session.json        # optional portable API-key file for --self
-  creds/<email>.json  # imported API keys, mode 0600
-  cache/usage.json    # unavailable-usage metadata after an explicit refresh
+  creds/<email>.json  # API keys and optional dashboard sessions, mode 0600
+  cache/usage.json    # usage amounts, billing dates, cache provenance and errors
   backups/            # optional portable-session backup
 ```
 

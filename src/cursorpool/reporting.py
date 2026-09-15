@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cursorpool import paths
-from cursorpool.analytics import cache_is_fresh, get_usage_result
+from cursorpool.analytics import cache_is_fresh, get_usage_result, public_usage_details
 from cursorpool.pool import load_pool
 from cursorpool.select import rank_accounts
 from cursorpool.state import locked_state
@@ -106,6 +106,8 @@ def collect_stats(
         "locked_email": pool.locked_email,
         "strategy": pool.strategy,
         "usage": {
+            **({"unit": "USD", "account_usage": public_usage_details(cache, usage_result.by_id or {})}
+               if cache.get("provider") == "cursor-dashboard" else {}),
             "fetched_at": fetched_at,
             "age_seconds": age_seconds,
             "ttl_seconds": pool.usage_cache_ttl_seconds,

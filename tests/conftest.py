@@ -65,3 +65,10 @@ def isolate_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
     monkeypatch.delenv("CURSOR_AUTH_TOKEN", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_usage_network(monkeypatch: pytest.MonkeyPatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Tests must inject Cursor HTTP responses; real network is forbidden")
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", forbidden)
