@@ -54,36 +54,36 @@ Create a **Cursor user API key** in the
 not an OpenAI or Anthropic provider key. See
 [Cursor CLI authentication](https://cursor.com/docs/cli/reference/authentication).
 
-If your environment already contains `CURSOR_API_KEY`:
+No JSON file is needed. Import your key through a hidden terminal prompt:
 
 ```bash
-cursorpool import --self --email you@example.com
+cursorpool import --email you@example.com
 cursorpool list
-cursorpool                     # equivalent to cursorpool run -- agent
 cursorpool -p "hello"
 ```
 
-`import --self` reads `CURSOR_API_KEY`, or falls back to `session.json` in the
-cursorpool home. It requires `--email` and replaces an existing entry for that
-email. It does not read Cursor browser-login storage or an IDE database.
-
-Alternatively, import a JSON file with the following shape (fake key only):
-
-```json
-{"apiKey": "fake-cursor-user-api-key"}
-```
+`cursorpool add --email you@example.com` uses the same prompt. You can also supply
+a key directly or read a raw key from stdin:
 
 ```bash
-cursorpool import --session ./session.json --email you@example.com
-cursorpool import --session - --email you@example.com < session.json
-cursorpool import --session ./session.json --email you@example.com --force
-cursorpool add --email you@example.com --session ./session.json
+cursorpool import --email you@example.com --api-key 'fake-cursor-api-key'
+cursorpool import --email you@example.com --api-key - < private-key.txt
+cursorpool add --email you@example.com --api-key --weight 2.5
 ```
 
-API keys must be non-empty strings without control characters. The stored
-session contains `apiKey` and optionally `usageSessionToken`; Augment sessions
-are not accepted. Each imported
-credential file is written atomically with `0600` permissions.
+Use the hidden prompt or stdin to keep real keys out of shell history and process
+arguments. `--api-key` without a value prompts; `--api-key -` reads raw text, not
+JSON. A terminal without hidden-input support is rejected with a stdin suggestion.
+Existing accounts require `--force` to replace their credentials.
+
+If `CURSOR_API_KEY` is already set, `cursorpool import --self --email you@example.com` imports it. For compatibility, `--self` also retains its old
+portable-credentials-file fallback and replacement behavior. Normal key imports
+do not look for that file or read browser-login storage or an IDE database.
+
+Legacy JSON import remains available through `--session FILE` (or `--session -`
+for JSON on stdin), and share blobs remain supported. Existing stored accounts
+need no migration. Cursorpool manages its own credential files with atomic writes
+and `0600` permissions; you do not need to create or maintain them yourself.
 
 ## Enable personal usage
 
@@ -259,11 +259,12 @@ cursorpool remove you@example.com --json
 
 | Command | Purpose |
 |---|---|
-| `import --self --email …` | Import environment key or cursorpool session file |
-| `import --session PATH --email …` | Import JSON (`-` = stdin) |
+| `import --email … [--api-key [KEY]]` | Import API key; hidden prompt by default, `-` = raw stdin |
+| `import --self --email …` | Import environment key (legacy portable-file fallback) |
+| `import --session PATH --email …` | Legacy credentials JSON import (`-` = stdin) |
 | `import --usage-session [FILE] --email …` | Attach dashboard cookie (hidden prompt by default; `-` = stdin) |
 | `import <blob>` | Import share blob (`-` = stdin; `--json`) |
-| `add --email … --session …` | Add from session JSON (`--force` to replace) |
+| `add --email … [--api-key [KEY]]` | Add API key; supports label, weight, notes and `--force` |
 | `export [email] \| --self` | Export blob (`--env`, `--json`) |
 | `remove EMAIL` | Remove account (`--json`) |
 | `update EMAIL [--enable\|--disable] [--weight N]` | Update settings (`--json`) |
@@ -274,7 +275,7 @@ cursorpool remove you@example.com --json
 | `refresh` | Fetch personal dashboard usage |
 | `run -- <cmd…>` | Execute with pooled authentication |
 | `status` | Home, mode and ranks (`--json`, `--refresh`) |
-| `restore` | Restore an existing cursorpool session backup |
+| `restore` | Restore a legacy portable credentials backup |
 
 `next` and `use` remain removed, as in augpool; use `mode`. `restore` preserves
 the backup interface for portable session files. Normal runs do not overwrite
@@ -286,14 +287,14 @@ session files or create backups, and restoring never changes the selection mode.
 ~/.cursorpool/
   pool.json           # registry, lock, weights; schema v3
   state.json          # local selections, daily history, cooldowns
-  session.json        # optional portable API-key file for --self
   creds/<email>.json  # API keys and optional dashboard sessions, mode 0600
   cache/usage.json    # usage amounts, billing dates, cache provenance and errors
   backups/            # optional portable-session backup
 ```
 
-The registry's `cursor_session_path` defaults to `session.json`, resolved relative
-to the selected cursorpool home. Augpool's home and credentials are independent.
+The legacy `cursor_session_path` registry field remains readable for `--self`
+and `restore` compatibility. Normal setup and runs use the managed account
+credentials above. Augpool's home and credentials are independent.
 Forked from augpool commit `eccfc570a9a0d105c884526ede68f5b737b2b95b`.
 The original MIT license is retained.
 

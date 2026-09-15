@@ -65,7 +65,23 @@ def _print_mutation(args: argparse.Namespace, action: str, email: str, human: st
         print(human)
 
 
+def _hidden_credential(prompt: str, stdin_option: str) -> str:
+    import getpass
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return getpass.getpass(prompt)
+        except (getpass.GetPassWarning, EOFError) as exc:
+            raise ValueError(f"no secure terminal; use {stdin_option} with stdin") from exc
+
+
 def cmd_add(args: argparse.Namespace) -> int:
+    if args.session is None or args.api_key is not None:
+        args.self = False
+        args.blob = None
+        return cmd_import(args)
     root = _root_from_args(args)
     pool = load_pool(root)
     account = add_account(
@@ -83,21 +99,34 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
-    """Import blob, --self (current session.json), or --session file + --email."""
+    """Import a Cursor API key, dashboard cookie, or portable credentials."""
     root = _root_from_args(args)
     pool = load_pool(root)
 
     session_flag = getattr(args, "session", None)
     usage_session = getattr(args, "usage_session", None)
-    modes = sum(bool(x) for x in (args.self, session_flag, args.blob, usage_session))
+    api_key = getattr(args, "api_key", None)
+    modes = sum(x is not None and x is not False for x in (args.self, session_flag, args.blob, usage_session, api_key))
     if modes > 1:
-        raise ValueError(
-            "pass only one of: blob, --self, --session, or --usage-session\n"
-            "  examples:\n"
-            "    cursorpool import eyJ...\n"
-            "    cursorpool import --self --email you@company.com\n"
-            "    cursorpool import --session ./session.json --email you@company.com"
+        raise ValueError("pass only one credential source: --api-key, --self, --session, --usage-session, or blob")
+
+    if api_key is not None or (modes == 0 and args.email):
+        if not args.email:
+            raise ValueError("API-key import requires --email")
+        email = normalize_email(args.email)
+        if api_key is None or api_key is True:
+            key = _hidden_credential("Cursor API key (hidden): ", "--api-key -")
+        elif api_key == "-":
+            key = sys.stdin.read().strip()
+        else:
+            key = api_key
+        account = add_account(
+            pool, email=email, session={"apiKey": key}, root=root,
+            label=args.label or email, force=bool(args.force),
+            weight=getattr(args, "weight", 1.0), notes=getattr(args, "notes", ""),
         )
+        _print_mutation(args, "import", account.email, f"imported API key for {account.email}")
+        return 0
 
     if usage_session is not None:
         if not args.email:
@@ -106,16 +135,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         session_path = resolve_session_file(account, root)
         session = load_session(session_path)
         if usage_session == "prompt":
-            import getpass
-            import warnings
-
-            # Refuse getpass's echoing fallback when no terminal is available.
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", getpass.GetPassWarning)
-                try:
-                    value = getpass.getpass("Cursor WorkosCursorSessionToken (hidden): ")
-                except (getpass.GetPassWarning, EOFError) as exc:
-                    raise ValueError("no secure terminal; use --usage-session - with stdin") from exc
+            value = _hidden_credential("Cursor WorkosCursorSessionToken (hidden): ", "--usage-session -")
         elif usage_session == "-":
             value = sys.stdin.read()
         else:
@@ -127,7 +147,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     if args.self or session_flag:
         if not args.email:
             which = "--self" if args.self else "--session"
-            extra = "" if args.self else "./session.json "
+            extra = "" if args.self else "./credentials.json "
             raise ValueError(
                 f"import {which} requires --email\n"
                 f"  example: cursorpool import {which} {extra}--email you@company.com"
@@ -145,8 +165,7 @@ def cmd_import(args: argparse.Namespace) -> int:
             else:
                 raise FileNotFoundError(
                     "no Cursor API key available; set CURSOR_API_KEY or use "
-                    "import --session FILE --email EMAIL (JSON with apiKey). "
-                    "Browser-login import is not supported."
+                    "cursorpool import --api-key --email EMAIL for a hidden prompt."
                 )
             force = True
         else:
@@ -186,12 +205,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         return 0
 
     if not args.blob:
-        raise ValueError(
-            "blob required, or use --self / --session\n"
-            "  example: cursorpool import eyJ...\n"
-            "  example: cursorpool import --self --email you@company.com\n"
-            "  example: cursorpool import --session ./session.json --email you@company.com"
-        )
+        raise ValueError("provide --email to import an API key, or supply a share blob")
     if args.email:
         raise ValueError(
             "--email is only valid with --self or --session "
@@ -314,7 +328,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         return 0
     if not pool.accounts:
         print("pool empty")
-        print("  cursorpool import --self --email you@company.com")
+        print("  cursorpool import --email you@company.com")
         print("  cursorpool import <blob>")
         return 0
     headers = ("EMAIL", "SCORE", "USED USD" if usage is not None else "CREDITS", "LOCAL", "SRC", "COOL", "LOCKED")
@@ -463,7 +477,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     pool = load_pool(root)
     if not pool.accounts:
         print("error: pool empty — import an account first", file=sys.stderr)
-        print("  cursorpool import --self --email you@company.com", file=sys.stderr)
+        print("  cursorpool import --email you@company.com", file=sys.stderr)
         return 1
     from cursorpool.runner import is_protocol_mode, should_capture_output
     from cursorpool.state import load_state, save_state
@@ -538,9 +552,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"cursorpool {__version__}")
     p.add_argument("--home", help="override CURSORPOOL_HOME / ~/.cursorpool")
     sub = p.add_subparsers(dest="command", required=True)
-    add_p = sub.add_parser("add", help="add a session.json keyed by email")
+    add_p = sub.add_parser("add", help="add a Cursor API key keyed by email")
     add_p.add_argument("--email", required=True, help="account email (unique key)")
-    add_p.add_argument("--session", required=True, help="path to session.json, or - for stdin")
+    add_p.add_argument("--session", default=None, help="legacy credentials JSON file, or - for stdin")
+    add_p.add_argument("--api-key", nargs="?", const=True, default=None, metavar="KEY", help="API key; omit value for hidden prompt, or - for stdin")
+    add_p.add_argument("--json", action="store_true")
     add_p.add_argument("--label", default="")
     add_p.add_argument("--weight", type=float, default=1.0)
     add_p.add_argument("--notes", default="")
@@ -548,29 +564,30 @@ def build_parser() -> argparse.ArgumentParser:
     add_p.set_defaults(func=cmd_add)
     imp_p = sub.add_parser(
         "import",
-        help="import share blob, --self, or --session file (email required for file/self)",
+        help="import a Cursor API key (hidden prompt with --email), dashboard session, or share blob",
     )
     imp_p.add_argument("blob", nargs="?", default=None, help="base64url blob, or - for stdin blob")
     imp_p.add_argument(
         "--self",
         action="store_true",
-        help="import CURSOR_API_KEY or cursorpool session.json (requires --email)",
+        help="import CURSOR_API_KEY (legacy portable credentials fallback; requires --email)",
     )
     imp_p.add_argument(
         "--session",
         default=None,
-        help="path to session.json (or - for stdin JSON); requires --email",
+        help="legacy credentials JSON file (or - for stdin JSON); requires --email",
     )
     imp_p.add_argument(
         "--email",
         default=None,
-        help="required with --self or --session",
+        help="account email; prompts for an API key when no source is supplied",
     )
     imp_p.add_argument(
         "--usage-session", nargs="?", const="prompt", default=None,
         metavar="FILE",
         help="attach dashboard session to an existing --email; hidden prompt, FILE, or - for stdin",
     )
+    imp_p.add_argument("--api-key", nargs="?", const=True, default=None, metavar="KEY", help="API key; omit value for hidden prompt, or - for stdin")
     imp_p.add_argument("--label", default="")
     imp_p.add_argument("--force", action="store_true", help="replace existing email")
     imp_p.add_argument("--json", action="store_true")
@@ -643,7 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
     st_p.add_argument("--json", action="store_true")
     st_p.add_argument("--refresh", action="store_true")
     st_p.set_defaults(func=cmd_status)
-    rs_p = sub.add_parser("restore", help="restore cursorpool session.json from backup")
+    rs_p = sub.add_parser("restore", help="restore a legacy portable credentials backup")
     rs_p.set_defaults(func=cmd_restore)
     return p
 
